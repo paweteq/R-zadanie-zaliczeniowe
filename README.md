@@ -1,0 +1,210 @@
+Zadania na zaliczenie
+================
+Paweł Teodorczyk
+2026-04-20
+
+- [Zadanie 1: Średnia cena za m2
+  (Polska)](#zadanie-1-średnia-cena-za-m2-polska)
+- [Zadanie 2: Wynagrodzenia
+  (Pomorskie)](#zadanie-2-wynagrodzenia-pomorskie)
+- [Zadanie 3: Analiza TOPSIS (Rynek
+  Pracy)](#zadanie-3-analiza-topsis-rynek-pracy)
+
+## Zadanie 1: Średnia cena za m2 (Polska)
+
+``` r
+# Ścieżka do mapy
+
+#link do mapy: https://gadm.org/download_country.html
+sciezka_mapa <- "C:/Users/pawel/Desktop/gadm41_POL_1_pk.rds"
+
+# Pobieramy dane z BDL za rok 2024
+dane_gus <- get_data_by_variable(varId = "633692", unitLevel = 2, year = 2024)
+
+if (file.exists(sciezka_mapa)) {
+  temp_mapa <- readRDS(sciezka_mapa)
+  mapa_woj <- temp_mapa %>% terra::unwrap() %>% st_as_sf()
+  
+  # Ujednolicenie nazw
+  dane_gus$name <- toupper(dane_gus$name)
+  mapa_woj$NAME_1 <- toupper(mapa_woj$NAME_1)
+  
+  # ŁĄCZENIE
+  mapa_finalna <- mapa_woj %>%
+    left_join(dane_gus, by = c("NAME_1" = "name"))
+  
+  # Obliczanie środków województw dla etykiet
+  mapa_finalna <- mapa_finalna %>%
+    mutate(centroid = st_centroid(geometry),
+           coords = st_coordinates(centroid))
+  
+  # Generowanie kartogramu
+  max_val <- max(mapa_finalna$val, na.rm = TRUE)
+  jednostka <- if(max_val > 100) " zł" else " %"
+
+  ggplot(data = mapa_finalna) +
+    geom_sf(aes(fill = val), color = "white", size = 0.3) +
+    geom_text(aes(x = coords[,1], y = coords[,2], label = round(val, 1)), 
+              size = 4, fontface = "bold", color = "black") +
+    scale_fill_distiller(
+      palette = "Reds", 
+      direction = 1, 
+      name = "Skala",
+      limits = range(mapa_finalna$val, na.rm = TRUE), 
+      labels = scales::label_number(big.mark = " ", suffix = jednostka)
+    ) +
+    labs(
+      title = "Średnia Cena za M2 (2024)",
+      subtitle = paste("Średnia:", round(mean(mapa_finalna$val, na.rm=TRUE), 2), jednostka),
+      caption = "Źródło: BDL GUS | Mapa: GADM",
+    ) +
+    theme_void()
+  
+} else {
+  print("Błąd: Nie znaleziono pliku mapy.")
+}
+```
+
+![](Zadania_Kolokwium_files/figure-gfm/zadanie1-1.png)<!-- -->
+
+## Zadanie 2: Wynagrodzenia (Pomorskie)
+
+``` r
+# Pobieranie danych z BDL
+dane_raw <- get_data_by_variable(varId = "64428", unitLevel = 5, year = 2024)
+
+dane_gus <- dane_raw %>%
+  filter(str_sub(id, 10, 12) == "000") %>%
+  mutate(kod_link = paste0(str_sub(id, 3, 4), str_sub(id, 8, 9))) %>%
+  filter(str_starts(kod_link, "22")) %>%
+  select(kod_link, val, name)
+
+# Wczytanie mapy powiatów
+#link do mapy: https://gadm.org/download_country.html
+sciezka_mapa_powiaty <- "C:/Users/pawel/Desktop/gadm41_POL_2.shp"
+
+
+if (file.exists(sciezka_mapa_powiaty)) {
+  mapa_pomorskie <- st_read(sciezka_mapa_powiaty, quiet = TRUE) %>% 
+    filter(NAME_1 == "Pomorskie") %>%
+    mutate(CC_2_JOIN = CC_2)
+  
+  mapa_finalna <- mapa_pomorskie %>%
+    left_join(dane_gus, by = c("CC_2_JOIN" = "kod_link"))
+  
+  mapa_finalna <- mapa_finalna %>%
+    mutate(centroid = st_centroid(geometry),
+           coords = st_coordinates(centroid))
+  
+  # Finalny Kartogram
+  ggplot(data = mapa_finalna) +
+    geom_sf(aes(fill = val), color = "white", size = 0.4) +
+    geom_text(aes(x = coords[,1], y = coords[,2], label = NAME_2), 
+              size = 2.8, fontface = "bold", check_overlap = TRUE) +
+    scale_fill_viridis_c(option = "plasma", name = "Złoty") +
+    labs(
+      title = "Przeciętne miesięczne wynagrodzenie brutto (2024)",
+      caption = "Źródło: BDL GUS | Mapa: GADM"
+    ) +
+    theme_void()
+} else {
+  print("Błąd: Nie znaleziono pliku mapy powiatów.")
+}
+```
+
+![](Zadania_Kolokwium_files/figure-gfm/zadanie2-1.png)<!-- -->
+
+## Zadanie 3: Analiza TOPSIS (Rynek Pracy)
+
+``` r
+# Ścieżka do pliku Excel
+sciezka_excel <- "C:/Users/pawel/Desktop/Rynek pracy.xlsx"
+
+if (file.exists(sciezka_excel)) {
+  # 1. Wczytanie danych
+  dane_raw <- read_excel(sciezka_excel, sheet = "Dane")
+  zmienne_info <- read_excel(sciezka_excel, sheet = "Zmienne")
+  
+  # 2. Filtrowanie i przygotowanie kodów (naprawa błędu JPT_KOD_JE)
+  dane_pomorskie <- dane_raw %>%
+    filter(tolower(Województwo) == "pomorskie") %>%
+    mutate(
+      # Zamieniamy Kod na 7-cyfrowy tekst z zerem na początku (np. "2201000")
+      Kod_Full = sprintf("%07d", as.numeric(Kod)),
+      # Wycinamy pierwsze 4 cyfry, aby pasowały do mapy (np. "2201")
+      Kod_Mapy = substr(Kod_Full, 1, 4)
+    )
+  
+  # 3. Przygotowanie macierzy do TOPSIS
+  istniejace_zmienne <- intersect(zmienne_info$Zmienna, colnames(dane_pomorskie))
+  zmienne_final <- zmienne_info %>% filter(Zmienna %in% istniejace_zmienne)
+  
+  X <- dane_pomorskie %>% 
+    select(all_of(zmienne_final$Zmienna)) %>% 
+    as.matrix()
+  rownames(X) <- dane_pomorskie$Powiat
+  
+  # 4. Parametry TOPSIS (poprawa logiki Stymulanta/Destymulanta)
+  wagi <- rep(1 / ncol(X), ncol(X))
+  # Sprawdzamy czy nazwa zaczyna się od "S" (Stymulanta)
+  impacts <- ifelse(grepl("^S", zmienne_final$`Rodzaj zmiennej`), "+", "-")
+  
+  # 5. Obliczenia
+  wynik_topsis <- topsis(X, wagi, impacts)
+  
+  dane_pomorskie <- dane_pomorskie %>%
+    mutate(
+      Ci = wynik_topsis$score,
+      Ranking = wynik_topsis$rank
+    ) %>%
+    arrange(desc(Ci))
+  
+  # WYKRES RANKINGU
+  p1 <- ggplot(dane_pomorskie, aes(x = reorder(Powiat, Ci), y = Ci)) +
+    geom_col(aes(fill = Ci)) +
+    coord_flip() +
+    scale_fill_viridis_c(option = "viridis") + 
+    labs(title = "Ranking sytuacji na rynku pracy - woj. pomorskie",
+         subtitle = "Metoda TOPSIS",
+         x = "Powiat", y = "Wskaźnik syntetyczny Ci") +
+    theme_minimal()
+  
+  print(p1)
+  
+  # 6. MAPA TOPSIS (naprawa pustego kartogramu)
+  sciezka_shp <- "C:/Users/pawel/Desktop/gadm41_POL_2.shp"
+  if(file.exists(sciezka_shp)){
+    mapa_pomorskie <- st_read(sciezka_shp, quiet = TRUE) %>% 
+      filter(NAME_1 == "Pomorskie") %>%
+      st_make_valid()
+    
+    # ŁĄCZENIE: CC_2 z mapy (np. "2201") z naszym Kod_Mapy (np. "2201")
+    mapa_finalna <- mapa_pomorskie %>%
+      left_join(dane_pomorskie, by = c("CC_2" = "Kod_Mapy")) %>%
+      filter(!is.na(Ci))
+    
+    if(nrow(mapa_finalna) > 0) {
+      mapa_finalna <- mapa_finalna %>%
+        mutate(centroid = st_centroid(geometry),
+               coords = st_coordinates(centroid))
+      
+      p2 <- ggplot(data = mapa_finalna) +
+        geom_sf(aes(fill = Ci), color = "white", size = 0.4) +
+        scale_fill_viridis_c(option = "plasma", name = "Wskaźnik Ci") +
+        geom_text(aes(x = coords[,1], y = coords[,2], label = Powiat), 
+                  size = 2.5, fontface = "bold", check_overlap = TRUE) +
+        labs(title = "Kartogram sytuacji na rynku pracy - Pomorskie",
+             caption = "Źródło: Rynek pracy.xlsx | Analiza: TOPSIS") +
+        theme_void()
+      
+      print(p2)
+    } else {
+      print("Błąd: Nie udało się dopasować danych do mapy. Sprawdź formaty kodów.")
+    }
+  }
+} else {
+  print("Błąd: Nie znaleziono pliku Excel.")
+}
+```
+
+![](Zadania_Kolokwium_files/figure-gfm/zadanie3-1.png)<!-- -->![](Zadania_Kolokwium_files/figure-gfm/zadanie3-2.png)<!-- -->
